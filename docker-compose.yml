@@ -1,0 +1,16 @@
+services:
+  vf-transcripts-csv-export:
+    build: .
+    ports:
+      - "${PORT}:${PORT}"
+    environment:
+      - API_BASE_URL=${API_BASE_URL}
+      - PROJECT_ID=${PROJECT_ID}
+      - VF_API_KEY=${VF_API_KEY}
+      - AUTHORIZATION_TOKEN=${AUTHORIZATION_TOKEN}
+      - DELAY=${DELAY}
+      - TIMEOUT=${TIMEOUT}
+      - DEBUG_MODE=${DEBUG_MODE}
+      - PORT=${PORT}
+    volumes:
+      - .:/app
