@@ -17,6 +17,8 @@ const AUTHORIZATION_TOKEN = Bun.env.AUTHORIZATION_TOKEN;
 const DELAY = parseInt(Bun.env.DELAY || '250');
 const TIMEOUT = Bun.env.TIMEOUT || '5m';
 const EXTRA_LOGS = Bun.env.EXTRA_LOGS || false;
+const REDACT_API_URL = Bun.env.REDACT_API_URL || '';
+const USE_REDACT = Bun.env.USE_REDACT || 'false';
 const PORT = Bun.env.PORT || 3000;
 
 // Rate limit configuration
@@ -128,46 +130,78 @@ async function fetchDialogs(projectID: string, dialogID: string, vfApiKey: strin
   }
 }
 
-function getContentAndOutput(dialog: Dialog): { content: string, output: string, ai: boolean } {
+async function redactText(text: string): Promise<string> {
+  try {
+    const response = await fetch(REDACT_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) {
+      console.error(`Redaction API error: ${response.statusText}`);
+      return text; // Return original text if redaction fails
+    }
+
+    const data = await response.json();
+    return data.redacted_text || text;
+  } catch (error) {
+    console.error('Error during redaction:', error);
+    return text; // Return original text if redaction fails
+  }
+}
+
+async function getContentAndOutput(dialog: Dialog, useRedact: boolean): Promise<{ content: string, output: string, ai: boolean }> {
   let content = '';
   let output = '';
   let ai = false;
 
+  const shouldRedact = useRedact && REDACT_API_URL;
+  const processText = async (text: string) => {
+    if (shouldRedact) {
+      return await redactText(text);
+    }
+    return text;
+  };
+  ai = dialog.payload?.payload?.ai ? true : false;
+  content = dialog.payload ? `"${JSON.stringify(dialog.payload).replace(/"/g, '""').replace(/\n/g, ' ')}"` : '';
   switch (dialog.type) {
     case 'launch':
       content = dialog.format ? `${String(dialog.format).replace(/"/g, '""').replace(/\n/g, ' ')}` : '';
       break;
     case 'choice':
     case 'request':
+      if (dialog.payload?.type === 'intent') {
+        output = dialog.payload.payload?.query ? `"${await processText(String(dialog.payload.payload?.query).replace(/"/g, '""'))}"` : '';
+      }
+      break
     case 'knowledgeBase':
+      output = dialog.payload.payload?.query?.message ? `"${await processText(String(dialog.payload.payload.query.message).replace(/"/g, '""'))}"` : '';
+      break
     case 'cardV2':
     case 'block':
     case 'path':
     case 'flow':
     case 'text':
+      output = dialog.payload.payload?.message ? `"${await processText(String(dialog.payload.payload.message).replace(/"/g, '""'))}"` : '';
+      break
     case 'speak':
+      if (dialog.payload?.type === 'audio') {
+        output = dialog.payload?.src ? `"${String(dialog.payload.src).replace(/"/g, '""')}"` : '';
+      }
+      if (dialog.payload?.type === 'message') {
+        output = dialog.payload?.message ? `"${await processText(String(dialog.payload.message).replace(/"/g, '""'))}"` : '';
+      }
+      break
     case 'visual':
+      output = dialog.payload?.image ? `"${String(dialog.payload.image).replace(/"/g, '""')}"` : '';
+      break
     case 'carousel':
     case 'debug':
     case 'no-reply':
       content = dialog.payload?.payload ? `"${JSON.stringify(dialog.payload.payload).replace(/"/g, '""').replace(/\n/g, ' ')}"` : '';
-      if (dialog.type === 'request' && dialog.payload?.type === 'intent') {
-        output = dialog.payload.payload?.query ? `"${String(dialog.payload.payload?.query).replace(/"/g, '""')}"` : '';
-      } else if (dialog.type === 'knowledgeBase') {
-        output = dialog.payload.payload?.query?.message ? `"${String(dialog.payload.payload.query.message).replace(/"/g, '""')}"` : '';
-      } else if (dialog.type === 'text') {
-        output = dialog.payload.payload?.message ? `"${String(dialog.payload.payload.message).replace(/"/g, '""')}"` : '';
-        ai = dialog.payload?.payload?.ai ? true : false;
-      } else if (dialog.type === 'speak' && dialog.payload?.type === 'message') {
-        output = dialog.payload?.message ? `"${String(dialog.payload.message).replace(/"/g, '""')}"` : '';
-        ai = dialog.payload?.payload?.ai ? true : false;
-      } else if (dialog.type === 'speak' && dialog.payload?.type === 'audio') {
-        output = dialog.payload?.src ? `"${String(dialog.payload.src).replace(/"/g, '""')}"` : '';
-        ai = dialog.payload?.payload?.ai ? true : false;
-      } else if (dialog.type === 'visual') {
-        output = dialog.payload?.image ? `"${String(dialog.payload.image).replace(/"/g, '""')}"` : '';
-        ai = dialog.payload?.payload?.ai ? true : false;
-      }
       break;
     case 'end':
       content = 'end';
@@ -180,7 +214,7 @@ function getContentAndOutput(dialog: Dialog): { content: string, output: string,
   return { content, output, ai };
 }
 
-async function jsonToCsv(jsonData: Dialog[], sessionID: string, transcriptID: string): Promise<string> {
+async function jsonToCsv(jsonData: Dialog[], sessionID: string, transcriptID: string, useRedact: boolean): Promise<string> {
   const headers = [
     'transcriptID',
     'sessionID',
@@ -201,8 +235,8 @@ async function jsonToCsv(jsonData: Dialog[], sessionID: string, transcriptID: st
   ];
   const csvRows = [headers.join(',')];
 
-  jsonData.forEach(dialog => {
-    const { content, output, ai } = getContentAndOutput(dialog);
+  for (const dialog of jsonData) {
+    const { content, output, ai } = await getContentAndOutput(dialog, useRedact);
     const turnID = dialog.turnID;
     const type = dialog.type;
     let event = dialog.payload.type;
@@ -250,7 +284,7 @@ async function jsonToCsv(jsonData: Dialog[], sessionID: string, transcriptID: st
       token_consumption_answer
     ];
     csvRows.push(row.join(','));
-  });
+  };
 
   return csvRows.join('\n');
 }
@@ -262,14 +296,19 @@ async function saveCsvFile(filePath: string, csvContent: string) {
 const app = express();
 
 app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response): Promise<void> => {
-  const { vfApiKey, projectId, tag, range, startDate, endDate } = req.query as {
+  const { vfApiKey, projectId, tag, range = 'Today', startDate, endDate, redact } = req.query as {
     vfApiKey: string;
     projectId: string;
     tag?: string;
     range?: string;
     startDate?: string;
     endDate?: string;
+    redact?: string;
   };
+
+  const shouldUseRedact = redact ?
+  redact.toLowerCase() === 'true' :
+  USE_REDACT === 'true';
 
   const apiKey = vfApiKey || VF_API_KEY;
   const projectID = projectId || PROJECT_ID;
@@ -282,6 +321,10 @@ app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response
     return;
   }
 
+  if (shouldUseRedact && !REDACT_API_URL) {
+    res.status(400).send('Redaction requested but REDACT_API_URL is not configured.');
+    return;
+  }
 
   if (range && !validRanges.includes(range)) {
     res.status(400).send(`Invalid range value. Must be one of: ${validRanges.join(', ')}`);
@@ -314,11 +357,13 @@ app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response
     for (const transcript of transcripts) {
       const dialogID = transcript._id;
       const sessionID = transcript.sessionID;
-      if (EXTRA_LOGS) console.log(`Processing dialog ID: ${dialogID}`);
+      if (EXTRA_LOGS === 'true') {
+        console.log(`Processing${shouldUseRedact ? ' and redacting' : ''} dialog ID: ${dialogID}`);
+      }
       await delay(DELAY);
       const jsonData = await fetchDialogs(sanitizedProjectId, dialogID, apiKey);
       if (jsonData.length > 0) {
-        const csvContent = await jsonToCsv(jsonData, sessionID, dialogID);
+        const csvContent = await jsonToCsv(jsonData, sessionID, dialogID, shouldUseRedact);
         const filePath = join(outputDir, `${dialogID}.csv`);
         await saveCsvFile(filePath, csvContent);
         if (EXTRA_LOGS) console.log(`CSV file created for dialog ID: ${dialogID}`);

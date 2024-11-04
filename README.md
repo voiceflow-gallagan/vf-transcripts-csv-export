@@ -35,6 +35,8 @@ This project is a parser/csv exporter for Voiceflow agent transcripts, designed 
    DELAY=50
    TIMEOUT=5m
    EXTRA_LOGS=false
+   REDACT_API_URL=http://localhost:5005/redact
+   USE_REDACT=false
    PORT=3000
    ```
 
@@ -47,7 +49,12 @@ This project is a parser/csv exporter for Voiceflow agent transcripts, designed 
    - `DELAY`: **Delay** between requests to Transcripts API in milliseconds.
    - `TIMEOUT`: **Timeout** in minutes for the /export endpoint.
    - `EXTRA_LOGS`: Enable extra logs.
+   - `REDACT_API_URL`: **URL** for the SpaCy redaction API.
+   - `USE_REDACT`: Set to **true** to use the SpaCy redaction API.
    - `PORT`: **Port** to run the server on.
+
+   **Note**: The SpaCy redaction API is optional and can be used to redact PII from the transcripts.
+   Check the [SpaCy redaction API](https://github.com/voiceflow-gallagan/vf-spacy-pii-redac) repository for more details.
 
 4. **Generate Authorization Token**:
    You can set your own authorization token or generate a random one using the following command:
