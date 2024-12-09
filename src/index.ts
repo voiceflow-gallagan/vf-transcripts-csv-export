@@ -73,7 +73,7 @@ async function fetchTranscripts(vfApiKey: string,
     if (endDate) queryParams.append('endDate', endDate);
 
     const url = `${API_BASE_URL}/transcripts/${projectId}?${queryParams.toString()}`;
-
+    console.log(url);
     try {
       const response = await fetch(url, {
         headers: {
@@ -296,7 +296,7 @@ async function saveCsvFile(filePath: string, csvContent: string) {
 const app = express();
 
 app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response): Promise<void> => {
-  const { vfApiKey, projectId, tag, range = 'Today', startDate, endDate, redact } = req.query as {
+  const { vfApiKey, projectId, tag, range = 'Today', startDate, endDate, redact, singleFile } = req.query as {
     vfApiKey: string;
     projectId: string;
     tag?: string;
@@ -304,6 +304,7 @@ app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response
     startDate?: string;
     endDate?: string;
     redact?: string;
+    singleFile?: string;
   };
 
   const shouldUseRedact = redact ?
@@ -314,7 +315,7 @@ app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response
   const projectID = projectId || PROJECT_ID;
   const authToken = (req.headers['authorization'] as string | undefined) || '';
   const sanitizedProjectId = basename(projectId || PROJECT_ID || '');
-  const validRanges = ['Today', 'Yesterday', 'Last 7 Days', 'Last 30 Days', 'All Time'];
+  const validRanges = ['Today', 'Yesterday', 'Last 7 days', 'Last 30 days', 'All time'];
 
   if (!apiKey || !projectID) {
     res.status(400).send('VF API key and project ID are required.');
@@ -354,19 +355,50 @@ app.get('/export', timeout(TIMEOUT), limiter, async (req: Request, res: Response
     const outputDir = join('/tmp', 'exports', `${sanitizedProjectId}_${timestamp}`);
     await mkdir(outputDir, { recursive: true });
 
-    for (const transcript of transcripts) {
-      const dialogID = transcript._id;
-      const sessionID = transcript.sessionID;
-      if (EXTRA_LOGS === 'true') {
-        console.log(`Processing${shouldUseRedact ? ' and redacting' : ''} dialog ID: ${dialogID}`);
+    if (singleFile === 'true') {
+      // Create a single CSV file with all transcripts
+      let isFirstFile = true;
+      let consolidatedCsvContent = '';
+
+      for (const transcript of transcripts) {
+        const dialogID = transcript._id;
+        const sessionID = transcript.sessionID;
+        if (EXTRA_LOGS === 'true') {
+          console.log(`Processing${shouldUseRedact ? ' and redacting' : ''} dialog ID: ${dialogID}`);
+        }
+        await delay(DELAY);
+        const jsonData = await fetchDialogs(sanitizedProjectId, dialogID, apiKey);
+        if (jsonData.length > 0) {
+          const csvContent = await jsonToCsv(jsonData, sessionID, dialogID, shouldUseRedact);
+          if (isFirstFile) {
+            consolidatedCsvContent = csvContent;
+            isFirstFile = false;
+          } else {
+            // Skip the header row for subsequent files
+            consolidatedCsvContent += '\n' + csvContent.split('\n').slice(1).join('\n');
+          }
+        }
       }
-      await delay(DELAY);
-      const jsonData = await fetchDialogs(sanitizedProjectId, dialogID, apiKey);
-      if (jsonData.length > 0) {
-        const csvContent = await jsonToCsv(jsonData, sessionID, dialogID, shouldUseRedact);
-        const filePath = join(outputDir, `${dialogID}.csv`);
-        await saveCsvFile(filePath, csvContent);
-        if (EXTRA_LOGS) console.log(`CSV file created for dialog ID: ${dialogID}`);
+
+      const consolidatedFilePath = join(outputDir, `${sanitizedProjectId}_all_transcripts.csv`);
+      await saveCsvFile(consolidatedFilePath, consolidatedCsvContent);
+      if (EXTRA_LOGS) console.log('Consolidated CSV file created');
+    } else {
+      // Existing code for individual files
+      for (const transcript of transcripts) {
+        const dialogID = transcript._id;
+        const sessionID = transcript.sessionID;
+        if (EXTRA_LOGS === 'true') {
+          console.log(`Processing${shouldUseRedact ? ' and redacting' : ''} dialog ID: ${dialogID}`);
+        }
+        await delay(DELAY);
+        const jsonData = await fetchDialogs(sanitizedProjectId, dialogID, apiKey);
+        if (jsonData.length > 0) {
+          const csvContent = await jsonToCsv(jsonData, sessionID, dialogID, shouldUseRedact);
+          const filePath = join(outputDir, `${dialogID}.csv`);
+          await saveCsvFile(filePath, csvContent);
+          if (EXTRA_LOGS) console.log(`CSV file created for dialog ID: ${dialogID}`);
+        }
       }
     }
 

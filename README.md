@@ -93,9 +93,10 @@ If not set in your **.env** file or if you want to override them, you have to pa
 #### Optional Parameters
 
 - `tag`: Filter transcripts by a specific tag.
-- `range`: Specify a range for the transcripts (**Today**, **Yesterday**, **Last 7 Days**, **Last 30 Days**, **All Time**).
+- `range`: Specify a range for the transcripts (**Today**, **Yesterday**, **Last 7 days**, **Last 30 days**, **All time**).
 - `startDate`: Filter transcripts starting from this date (ISO 8601 format **YYYY-MM-DD**).
 - `endDate`: Filter transcripts up to this date (ISO 8601 format **YYYY-MM-DD**).
+- `singleFile`: Set to **true** to export a single file.
 
 ### Example Request
 
